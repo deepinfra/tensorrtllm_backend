@@ -1,6 +1,7 @@
 import argparse
 import subprocess
 import sys
+import os
 from pathlib import Path
 
 
@@ -83,6 +84,18 @@ def get_cmd(world_size, tritonserver, grpc_port, http_port, metrics_port,
     return cmd
 
 
+def run_cmd(cmd):
+    try:
+        # Spawn a new process using subprocess
+        subprocess.run(cmd, check=True)
+        # If the command succeeds, the following lines won't be executed
+        print("The command failed.")
+        os._exit(1)
+    except subprocess.CalledProcessError as e:
+        # If the command fails, exit the current process with the same exit code
+        os._exit(e.returncode)
+
+
 if __name__ == '__main__':
     args = parse_arguments()
     res = subprocess.run(['pgrep', '-r', 'R', 'tritonserver'],
@@ -98,4 +111,4 @@ if __name__ == '__main__':
     cmd = get_cmd(int(args.world_size), args.tritonserver, args.grpc_port,
                   args.http_port, args.metrics_port, args.model_repo, args.log,
                   args.log_file, args.tensorrt_llm_model_name)
-    subprocess.Popen(cmd)
+    run_cmd(cmd)
