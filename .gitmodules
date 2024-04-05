@@ -1,4 +1,4 @@
 [submodule "tensorrt_llm"]
 	path = tensorrt_llm
-    url = https://github.com/deepinfra/TensorRT-LLM.git
-    branch = v0.8.0-di1
+	url = https://github.com/deepinfra/TensorRT-LLM.git
+	branch = v0.8.0-di1
