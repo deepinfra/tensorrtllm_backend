@@ -57,12 +57,12 @@ COPY tensorrt_llm/requirements* tensorrt_llm/
 RUN mkdir tensorrt_llm/tensorrt_llm && touch tensorrt_llm/tensorrt_llm/__init__.py
 COPY tensorrt_llm/tensorrt_llm/version.py tensorrt_llm/tensorrt_llm/version.py
 # This does the slow cpp build
-RUN cd tensorrt_llm && python3 scripts/build_wheel.py --trt_root="${TRT_ROOT}" -i --cuda_architectures="80-real;90-real" --skip_building_wheel && cd ..
+RUN cd tensorrt_llm && python3 scripts/build_wheel.py --trt_root="${TRT_ROOT}" -i --cuda_architectures="80-real;89-real;90-real" --skip_building_wheel && cd ..
 
 # copy over all the ptyhon stuff and build again
 COPY tensorrt_llm/examples tensorrt_llm/examples
 COPY tensorrt_llm/tensorrt_llm tensorrt_llm/tensorrt_llm
-RUN cd tensorrt_llm && python3 scripts/build_wheel.py --trt_root="${TRT_ROOT}" -i --cuda_architectures="80-real;90-real" && cd ..
+RUN cd tensorrt_llm && python3 scripts/build_wheel.py --trt_root="${TRT_ROOT}" -i --cuda_architectures="80-real;89-real;90-real" && cd ..
 
 FROM trt_llm_builder as trt_llm_backend_builder
 
