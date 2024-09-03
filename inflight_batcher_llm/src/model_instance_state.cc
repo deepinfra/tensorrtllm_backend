@@ -1291,7 +1291,10 @@ void ModelInstanceState::WaitForStats()
                 statJson.append("\"Max KV cache blocks\":" + std::to_string(kvStats.maxNumBlocks) + ",");
                 statJson.append("\"Tokens per KV cache block\":" + std::to_string(kvStats.tokensPerBlock) + ",");
                 statJson.append("\"Used KV cache blocks\":" + std::to_string(kvStats.usedNumBlocks) + ",");
+                statJson.append("\"Alloc Total KV cache blocks\":" + std::to_string(kvStats.allocTotalBlocks) + ",");
+                statJson.append("\"Alloc New KV cache blocks\":" + std::to_string(kvStats.allocNewBlocks) + ",");
                 statJson.append("\"Reused KV cache blocks\":" + std::to_string(kvStats.reusedBlocks) + ",");
+                statJson.append("\"Missed KV cache blocks\":" + std::to_string(kvStats.missedBlocks) + ",");
             }
 
             // requestStats is a list where each item is associated with an iteration,
