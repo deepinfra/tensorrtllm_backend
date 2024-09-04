@@ -32,7 +32,10 @@
 
 #include <nlohmann/json.hpp>
 
+#include "structured_execution/json_logit_processor.h"
+
 using executor::SizeType32;
+using structured_execution::JsonBatchedLogitProcessor;
 
 namespace triton::backend::inflight_batcher_llm
 {
@@ -413,8 +416,6 @@ executor::ExecutorConfig ModelInstanceState::getExecutorConfigFromParams()
         TLLM_LOG_WARNING("normalize_log_probs is not specified, will be set to true");
     }
 
-    executor::ExecutorConfig executorConfig;
-
     auto kvCacheConfig = getKvCacheConfigFromParams();
 
     bool enableChunkedContext = false;
@@ -541,9 +542,57 @@ executor::ExecutorConfig ModelInstanceState::getExecutorConfigFromParams()
         TLLM_LOG_INFO("recv_poll_period_ms is not set, will use busy loop");
     }
 
+    std::string structuredExecutionSafetensorsPath;
+    try
+    {
+        structuredExecutionSafetensorsPath = model_state_->GetParameter<std::string>("structured_execution_safetensors_path");
+        if (!structuredExecutionSafetensorsPath.empty())
+        {
+            if (!std::filesystem::exists(structuredExecutionSafetensorsPath))
+            {
+                structuredExecutionSafetensorsPath = "";
+                TLLM_CHECK_WITH_INFO(false, "Structured execution safetensors path at %s does not exist.",
+                    structuredExecutionSafetensorsPath.c_str());
+            }
+        }
+    }
+    catch (std::exception const& e)
+    {
+        // If parameter is not specified, just ignore
+        TLLM_LOG_WARNING("structured_execution_safetensors_path is not specified, will not support json");
+        structuredExecutionSafetensorsPath = "";
+    }
+
+    std::optional<executor::LogitsPostProcessorConfig> logit_post_processor_config = std::nullopt;
+
+    if (!structuredExecutionSafetensorsPath.empty()) {
+        int64_t max_batch_size = 512;
+        model_state_->GetModelConfig().MemberAsInt("max_batch_size", &max_batch_size);
+        TLLM_LOG_INFO("Loading logit processor at %s with max_batch_size %d...",
+            structuredExecutionSafetensorsPath.c_str(), max_batch_size);
+        mStructuredExecutionLogitProcessor = std::make_unique<JsonBatchedLogitProcessor>(
+            max_batch_size, structuredExecutionSafetensorsPath);
+        if (mStructuredExecutionLogitProcessor->isInitialized()) {
+            StructuredBatchedLogitProcessor &proc_ref = *mStructuredExecutionLogitProcessor;
+            std::optional<tensorrt_llm::executor::LogitsPostProcessorBatched> batched_post_processor = [&proc_ref](
+                std::vector<executor::IdType> const&req_ids_batch,
+                std::vector<executor::Tensor> &logits_batch,
+                std::vector<std::reference_wrapper<executor::BeamTokens const>> const&ids_batch,
+                executor::StreamPtr const&stream_ptr,
+                std::vector<std::optional<executor::IdType>> const&client_ids_batch) -> void {
+                proc_ref(req_ids_batch, logits_batch, ids_batch, stream_ptr, client_ids_batch);
+            };
+            // If set to true, logits post processor will run on all TP ranks in last PP rank
+            logit_post_processor_config = executor::LogitsPostProcessorConfig(std::nullopt, batched_post_processor, true);
+            TLLM_LOG_INFO("Successfully loaded logit processor at %s", structuredExecutionSafetensorsPath.c_str());
+        } else {
+            mStructuredExecutionLogitProcessor.reset();
+            TLLM_LOG_ERROR("Failed to load logit processor at %s", structuredExecutionSafetensorsPath.c_str());
+        }
+    }
     auto execConfig = executor::ExecutorConfig{maxBeamWidth, schedulerConfig, kvCacheConfig, enableChunkedContext,
         normalizeLogProbs, iterStatsMaxIterations, requestStatsMaxIterations, batchingType, std::nullopt, std::nullopt,
-        parallelConfig, peftCacheConfig, std::nullopt, decodingConfig, gpuWeightsPercent, maxQueueSize,
+        parallelConfig, peftCacheConfig, logit_post_processor_config, decodingConfig, gpuWeightsPercent, maxQueueSize,
         extendedRuntimePerfKnobConfig, std::nullopt, recvPollPeriodMs};
     execConfig.setSpecDecConfig(specDecConfig);
     return execConfig;
@@ -741,14 +790,16 @@ bool ModelInstanceState::handleStopRequest(TRITONBACKEND_Request* request, std::
 // Split batched TRITONBACKEND_Request into one executor:Request object per sample.
 std::vector<executor::Request> ModelInstanceState::createExecutorRequests(TRITONBACKEND_Request* request,
     bool excludeInputFromOutput, bool isDecoupled, executor::ModelType modelType, bool isOrchestrator,
-    bool specDecFastLogits)
+    bool specDecFastLogits, std::vector<std::unique_ptr<StructuredLogitProcessorRequestState>> &logitProcessorStates)
 {
     auto inputsTensors = utils::readInputsTensors(request);
     bool streaming = utils::getRequestBooleanInputTensor(request, kStreamingInputTensorName);
     executor::RequestType requestType = utils::getRequestType(request);
+    std::string structuredExecutionData = utils::getRequestStringInputTensor(request, kStructuredExecutionInputTensorName);
 
     return utils::createRequestsFromInputTensors(inputsTensors, excludeInputFromOutput, isDecoupled, streaming,
-        modelType, requestType, isOrchestrator, specDecFastLogits);
+        modelType, requestType, isOrchestrator, specDecFastLogits,
+        mStructuredExecutionLogitProcessor.get(), structuredExecutionData, logitProcessorStates);
 }
 
 void ModelInstanceState::enqueue(TRITONBACKEND_Request** requests, uint32_t const request_count)
@@ -776,9 +827,11 @@ void ModelInstanceState::enqueue(TRITONBACKEND_Request** requests, uint32_t cons
                 continue;
             }
 
+            std::vector<std::unique_ptr<StructuredLogitProcessorRequestState>> logitProcessorStates;
             auto executorRequests = createExecutorRequests(request, mInstanceSpecificConfig.excludeInputFromOutput,
-                isDecoupled(), mModelType, mIsOrchestratorMode, mSpeculativeDecodingFastLogits);
+                isDecoupled(), mModelType, mIsOrchestratorMode, mSpeculativeDecodingFastLogits, logitProcessorStates);
 
+            logitProcessorStates.resize(executorRequests.size());
             std::lock_guard<std::mutex> lock(mRequestIdToRequestDataMutex);
             TRITONBACKEND_ResponseFactory* factory;
             LOG_IF_ERROR(
@@ -797,9 +850,10 @@ void ModelInstanceState::enqueue(TRITONBACKEND_Request** requests, uint32_t cons
             for (int32_t batchIndex = 0; batchIndex < static_cast<int32_t>(requestIds.size()); ++batchIndex)
             {
                 auto const& requestId = requestIds.at(batchIndex);
-                auto const& executorRequest = executorRequests.at(batchIndex);
+                auto& executorRequest = executorRequests.at(batchIndex);
                 int64_t inputTokensSize = executorRequest.getInputTokenIds().size();
                 executor::SizeType32 beamWidthCopy = executorRequest.getSamplingConfig().getBeamWidth();
+
                 if (mRequestIdToRequestData.count(requestId))
                 {
                     TLLM_LOG_ERROR(
@@ -809,9 +863,9 @@ void ModelInstanceState::enqueue(TRITONBACKEND_Request** requests, uint32_t cons
                 }
                 auto requestOutputNames = utils::getRequestOutputNames(request);
                 mRequestIdToRequestData.emplace(requestId,
-                    RequestData{factory, request, tritonRequestId, inputTokensSize, beamWidthCopy,
+                    std::move(RequestData{factory, request, tritonRequestId, inputTokensSize, beamWidthCopy,
                         std::move(requestOutputNames), {exec_start_ns, compute_start_ns, 0, 0}, batchIndex,
-                        requestIdsSet, executorRequest.getRequestType()});
+                        requestIdsSet, executorRequest.getRequestType(), std::move(logitProcessorStates[batchIndex])}));
             }
             if (tritonRequestId != "")
             {
@@ -1087,7 +1141,7 @@ void ModelInstanceState::WaitForResponse()
         for (auto const& response : responses)
         {
             auto requestId = response.getRequestId();
-            RequestData requestData;
+            RequestData *requestDataPtr;
             {
                 std::lock_guard<std::mutex> lock(mRequestIdToRequestDataMutex);
                 if (!mRequestIdToRequestData.count(requestId))
@@ -1095,8 +1149,9 @@ void ModelInstanceState::WaitForResponse()
                     TLLM_LOG_ERROR("Unexpected response for a request ID that is not active");
                     continue;
                 }
-                requestData = mRequestIdToRequestData[requestId];
+                requestDataPtr = &mRequestIdToRequestData[requestId];
             }
+            RequestData &requestData = *requestDataPtr;
 
             auto factory = requestData.factory;
 
