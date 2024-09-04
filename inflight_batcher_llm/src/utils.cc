@@ -238,7 +238,8 @@ std::vector<InputTensors> readInputsTensors(TRITONBACKEND_Request* request)
 
         if (std::string(input_name) == "START" || std::string(input_name) == "CORRID"
             || std::string(input_name) == "END" || std::string(input_name) == kStopInputTensorName
-            || std::string(input_name) == kStreamingInputTensorName)
+            || std::string(input_name) == kStreamingInputTensorName
+            || std::string(input_name) == kStructuredExecutionInputTensorName)
         {
             continue;
         }
@@ -388,6 +389,58 @@ bool getRequestBooleanInputTensor(TRITONBACKEND_Request* request, std::string co
     bool boolean = *reinterpret_cast<bool const*>(buffer);
 
     return boolean;
+}
+
+std::string getRequestStringInputTensor(TRITONBACKEND_Request* request, std::string const& inputTensorName)
+{
+    // Get stop signal from the request
+    TRITONBACKEND_Input* input;
+    TRITONSERVER_Error* error = TRITONBACKEND_RequestInput(request, inputTensorName.c_str(), &input);
+    if (error)
+    {
+        // If the user does not provide input "stop", then regard the request as
+        // unstopped
+        std::string msg
+            = "ModelInstanceState::getRequestStringInputTensor: user "
+              "did not not provide "
+            + inputTensorName + " input for the request";
+        LOG_MESSAGE(TRITONSERVER_LOG_VERBOSE, msg.c_str());
+        TRITONSERVER_ErrorDelete(error);
+        return std::string();
+    }
+
+    uint64_t input_byte_size = 0;
+    uint32_t buffer_count = 0;
+    TRITONBACKEND_InputProperties(input, nullptr, nullptr, nullptr, nullptr, &input_byte_size, &buffer_count);
+    if (input_byte_size == 0) {
+        return std::string();
+    }
+    TLLM_CHECK_WITH_INFO(input_byte_size >= 4,
+        "String tensor %s has too small size %llu", inputTensorName.c_str(), (unsigned long long)input_byte_size);
+
+    LOG_MESSAGE(TRITONSERVER_LOG_VERBOSE,
+        ("ModelInstanceState::getRequestStopSignal: buffer_count = " + std::to_string(buffer_count)).c_str());
+
+    void const* buffer = 0L;
+    uint64_t buffer_byte_size = 0;
+    TRITONSERVER_MemoryType memory_type = TRITONSERVER_MEMORY_CPU;
+    int64_t memory_type_id = 0;
+    TRITONBACKEND_InputBuffer(input, 0, &buffer, &buffer_byte_size, &memory_type, &memory_type_id);
+
+    uint8_t const* utf8_buffer = reinterpret_cast<uint8_t const*>(buffer);
+    TLLM_CHECK_WITH_INFO(buffer_byte_size >= 4,
+        "String tensor %s has too small buffer %llu", inputTensorName.c_str(), (unsigned long long)buffer_byte_size);
+    uint64_t str_length = ((uint64_t)(utf8_buffer[3]) << 24) | ((uint64_t)(utf8_buffer[2]) << 16) |
+        ((uint64_t)(utf8_buffer[1]) << 8) | ((uint64_t)(utf8_buffer[0]));
+    TLLM_CHECK_WITH_INFO(str_length <= buffer_byte_size - 4,
+        "String tensor %s length %u too large for buffer %llu", inputTensorName.c_str(),
+            (unsigned)str_length, (unsigned long long)buffer_byte_size);
+
+    assert((memory_type == TRITONSERVER_MEMORY_CPU) || (memory_type == TRITONSERVER_MEMORY_CPU_PINNED));
+
+    char const *chars = reinterpret_cast<char const*>(utf8_buffer + 4);
+
+    return std::string(chars, chars + str_length);
 }
 
 std::string sparseListToStr(executor::VecTokens const& sparseList)
@@ -785,7 +838,9 @@ std::optional<executor::KvCacheRetentionConfig> getKvCacheRetentionConfigFromTen
 
 std::vector<executor::Request> createRequestsFromInputTensors(std::vector<InputTensors> const& inputsTensors,
     bool paramExcludeInputFromOutput, bool isDecoupled, bool streaming, executor::ModelType modelType,
-    executor::RequestType requestType, bool isOrchestrator, bool specDecFastLogits)
+    executor::RequestType requestType, bool isOrchestrator, bool specDecFastLogits,
+    StructuredBatchedLogitProcessor *structuredLogitProcessor, const std::string &structuredExecutionData,
+    std::vector<std::unique_ptr<FreeStateHolder>> &logitProcessorStates)
 {
     if (!isDecoupled && inputsTensors.size() > 1)
     {
@@ -914,9 +969,25 @@ std::vector<executor::Request> createRequestsFromInputTensors(std::vector<InputT
         auto externalDraftTokensConfig
             = utils::getExternalDraftTokensConfigFromTensors(inputTensors, specDecFastLogits);
 
+        std::optional<std::string> logitsPostProcessorName = std::nullopt;
+        std::optional<executor::IdType> clientId = std::nullopt;
+        std::unique_ptr<FreeStateHolder> currentLogitProcessorState;
+        if (structuredLogitProcessor && !structuredExecutionData.empty())
+        {
+            nlohmann::json js = nlohmann::json::parse(structuredExecutionData);
+            currentLogitProcessorState = structuredLogitProcessor->startRequest(
+                inputTokens.size(), endId.value_or(-1), js);
+            if (currentLogitProcessorState) {
+                logitsPostProcessorName = executor::Request::kBatchedPostProcessorName;
+                static_assert(sizeof(executor::IdType) >= sizeof(void*));
+                clientId = currentLogitProcessorState->get_client_id();
+            }
+        }
+        logitProcessorStates.emplace_back(std::move(currentLogitProcessorState));
+
         auto request = executor::Request(inputTokens, maxNewTokens, streaming, samplingConfig, outConfig, endId, padId,
             std::nullopt, badWords, stopWords, embeddingBias, externalDraftTokensConfig, pTuningConfig, std::nullopt,
-            loraConfig, std::nullopt, kvCacheRetentionConfig, std::nullopt, encoderInputTokens);
+            loraConfig, std::nullopt, kvCacheRetentionConfig, std::nullopt, encoderInputTokens, clientId);
 
         if (encoderInputFeatures.has_value())
         {
