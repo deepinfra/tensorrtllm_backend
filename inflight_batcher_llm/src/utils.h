@@ -27,6 +27,7 @@
 #pragma once
 
 #include "NvInfer.h"
+#include "structured_execution/structured_logit_processor.h"
 #include "tensorrt_llm/batch_manager/inferenceRequest.h"
 #include "tensorrt_llm/common/logger.h"
 #include "tensorrt_llm/runtime/iTensor.h"
@@ -135,6 +136,7 @@ struct OutputFieldsNames
 
 inline static std::string const kStopInputTensorName = "stop";
 inline static std::string const kStreamingInputTensorName = "streaming";
+inline static std::string const kStructuredExecutionInputTensorName = "structured_execution";
 inline static std::string const kRequestTypeParameterName = "request_type";
 inline static std::unordered_map<std::string, executor::RequestType> stringToRequestType
     = {{"context_and_generation", executor::RequestType::REQUEST_TYPE_CONTEXT_AND_GENERATION},
@@ -186,7 +188,9 @@ std::optional<executor::GuidedDecodingParams> getGuidedDecodingParamsFromTensors
 /// @brief Construct executor::Request from input tensors
 std::vector<executor::Request> createRequestsFromInputTensors(std::vector<InputTensors> const& inputsTensors,
     bool excludeInputFromOutput, bool isDecoupled, bool streaming, executor::ModelType modelType,
-    executor::RequestType requestType, bool isOrchestrator, bool specDecFastLogits);
+    executor::RequestType requestType, bool isOrchestrator, bool specDecFastLogits,
+    StructuredBatchedLogitProcessor *structuredLogitProcessor, const std::string &structuredExecutionData,
+    std::vector<std::unique_ptr<FreeStateHolder>> &logitProcessorStates);
 
 /// @brief get the requestId of the request and update requestIdStrMap
 /// @return Returns 0 if not specified. Throws an error if request_id cannot be convert to uint64_t
@@ -197,6 +201,9 @@ std::unordered_set<std::string> getRequestOutputNames(TRITONBACKEND_Request* req
 
 /// @brief Get the value of a boolean tensor
 bool getRequestBooleanInputTensor(TRITONBACKEND_Request* request, std::string const& inputTensorName);
+
+/// @brief Get the value of a string tensor in UTF-8
+std::string getRequestStringInputTensor(TRITONBACKEND_Request* request, std::string const& inputTensorName);
 
 /// @brief Get a single value tensor from the input tensors
 /// @return true if the value is found else false
