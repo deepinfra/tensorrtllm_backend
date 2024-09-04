@@ -26,7 +26,7 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/modules/set_ifndef.cmake)
 
 set_ifndef(TRTLLM_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../tensorrt_llm)
 
-include_directories(${TRTLLM_DIR} ${TRTLLM_DIR}/cpp/include)
+include_directories(${TRTLLM_DIR} ${TRTLLM_DIR}/cpp/include ${TRTLLM_DIR}/3rdparty/json/single_include)
 
 include(${TRTLLM_DIR}/cpp/cmake/modules/find_library_create_target.cmake)
 
@@ -326,16 +326,6 @@ target_link_libraries(
          ${CUDA_LIBRARIES}
          nvinfer
          ${nvinfer_plugin_tensorrt_llm})
-
-FetchContent_Declare(
-  json
-  GIT_REPOSITORY https://github.com/nlohmann/json.git
-  GIT_TAG v3.11.2)
-
-FetchContent_MakeAvailable(json)
-
-target_link_libraries(triton-tensorrt-llm-backend
-                      PRIVATE nlohmann_json::nlohmann_json)
 
 if(WIN32)
   set_target_properties(

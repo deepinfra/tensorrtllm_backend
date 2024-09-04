@@ -83,7 +83,6 @@ FROM trt_llm_backend_builder as final
 # Install TensorRT-LLM
 WORKDIR /app/
 COPY --from=trt_llm_builder /app/tensorrt_llm/build /app/tensorrt_llm/build
-RUN cd /app/tensorrt_llm/build && pip3 install *.whl
 
 # Install TensorRT-LLM backend
 ENV LD_LIBRARY_PATH=/opt/tritonserver/backends/tensorrtllm:${LD_LIBRARY_PATH}
