@@ -36,6 +36,7 @@
 #include "tensorrt_llm/executor/types.h"
 
 #include "model_state.h"
+#include "structured_execution/structured_logit_processor.h"
 
 #ifdef TRITON_ENABLE_METRICS
 #include "custom_metrics_reporter/custom_metrics_reporter.h"
@@ -101,6 +102,7 @@ struct RequestData
     std::shared_ptr<std::set<executor::IdType>> pendingBatchedRequestIds;
     executor::RequestType requestType;
     bool returnKvCacheReuseStats;
+    std::unique_ptr<FreeStateHolder> structuredExecutionState;
 };
 
 //
@@ -214,9 +216,9 @@ private:
     bool handleStopRequest(TRITONBACKEND_Request* request, std::string const& tritonRequestId);
 
     /// @brief Create an executor::Request from input tensors for each sample in batch
-    static std::vector<executor::Request> createExecutorRequests(TRITONBACKEND_Request* request,
+    std::vector<executor::Request> createExecutorRequests(TRITONBACKEND_Request* request,
         bool excludeInputFromOutput, bool isDecoupled, executor::ModelType modelType, bool isOrchestratorMode,
-        bool specDecFastLogits);
+        bool specDecFastLogits, std::vector<std::unique_ptr<FreeStateHolder>> &logitProcessorStates);
 
     /// @brief Fill in a triton response based on executor response
     std::tuple<TRITONBACKEND_Response*, bool, TRITONSERVER_Error*, int64_t> fillTritonResponse(
@@ -264,6 +266,7 @@ private:
 
     std::unordered_map<executor::IdType, RequestData> mRequestIdToRequestData;
     std::unordered_map<std::string, std::set<executor::IdType>> mTritonRequestIdToRequestIds;
+    std::unique_ptr<StructuredBatchedLogitProcessor> mStructuredExecutionLogitProcessor;
     std::mutex mRequestIdToRequestDataMutex;
 
     // The type of model (encoder-only, decoder-only, encoder-decoder)
