@@ -36,8 +36,7 @@ echo "Using TRT_ROOT=${TRT_ROOT}"
 echo "Using BUILD_UNIT_TESTS=${BUILD_UNIT_TESTS}"
 
 set -x
-apt-get update
-apt-get install -y --no-install-recommends rapidjson-dev
+dpkg -l rapidjson-dev | grep -q ^ii || apt-get update && apt-get install -y --no-install-recommends rapidjson-dev
 
 BUILD_DIR=$(dirname $0)/../build
 mkdir $BUILD_DIR
