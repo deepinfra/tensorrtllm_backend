@@ -309,6 +309,54 @@ target_link_libraries(
 target_link_libraries(triton-tensorrt-llm-backend
                       PRIVATE triton-tensorrt-llm-common)
 
+#########################
+# JSON Support
+list(APPEND STRUCTURED_EXECUTION_SRCS
+        src/structured_execution/structured_execution_engine.cc
+        src/structured_execution/structured_logit_processor.cu)
+list(APPEND STRUCTURED_EXECUTION_HDRS
+        src/structured_execution/structured_execution_engine.h
+        src/structured_execution/structured_logit_processor.h
+        src/structured_execution/structured_execution_safetensors.h
+        src/structured_execution/json_logit_processor.h)
+
+add_library(triton-structured-execution-library EXCLUDE_FROM_ALL
+        ${STRUCTURED_EXECUTION_SRCS} ${STRUCTURED_EXECUTION_HDRS})
+target_compile_features(triton-structured-execution-library
+        PRIVATE cxx_std_14) # cxx_std_17 not supported by nvcc
+if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+  target_compile_options(triton-structured-execution-library
+          PRIVATE /W1 /D_WIN32_WINNT=0x0A00 /EHsc)
+else()
+  target_compile_options(
+          triton-structured-execution-library
+          PRIVATE -Wall -Wextra -Wno-unused-parameter -Wno-deprecated-declarations)
+endif()
+
+set_target_properties(triton-structured-execution-library
+        PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+target_link_libraries(
+        triton-structured-execution-library
+        PUBLIC triton-common-json # from repo-common
+        triton-common-logging # from repo-common
+        triton-core-serverapi # from repo-core
+        triton-core-serverstub # from repo-core
+        triton-backend-utils # from repo-backend
+        ${tensorrt_llm})
+
+add_executable(json_safetensors_cli
+        src/structured_execution/structured_execution_engine.cc
+        src/structured_execution/structured_execution_engine.h
+        src/structured_execution/structured_execution_safetensors.h
+        src/structured_execution/structured_execution_engine_cli.cc
+        src/structured_execution/structured_execution_engine_cli.h)
+#target_compile_definitions(triton-structured-execution-library
+#        PRIVATE TRITON_ENABLE_METRICS=1)
+target_link_libraries(triton-tensorrt-llm-common
+        PRIVATE triton-structured-execution-library)
+#########################
+
 if(WIN32)
   set_target_properties(
     triton-tensorrt-llm-backend PROPERTIES POSITION_INDEPENDENT_CODE ON
