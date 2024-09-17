@@ -683,7 +683,7 @@ std::vector<executor::Request> createRequestsFromInputTensors(std::vector<InputT
     bool paramExcludeInputFromOutput, bool isDecoupled, bool streaming, executor::ModelType modelType,
     executor::RequestType requestType, bool isOrchestrator, bool specDecFastLogits,
     StructuredBatchedLogitProcessor *structuredLogitProcessor, const std::string &structuredExecutionData,
-    std::vector<std::unique_ptr<StructuredLogitProcessorRequestState>> &logitProcessorStates)
+    std::vector<std::unique_ptr<FreeStateHolder>> &logitProcessorStates)
 {
     if (!isDecoupled && inputsTensors.size() > 1)
     {
@@ -805,17 +805,16 @@ std::vector<executor::Request> createRequestsFromInputTensors(std::vector<InputT
 
         std::optional<std::string> logitsPostProcessorName = std::nullopt;
         std::optional<executor::IdType> clientId = std::nullopt;
-        std::unique_ptr<StructuredLogitProcessorRequestState> currentLogitProcessorState;
+        std::unique_ptr<FreeStateHolder> currentLogitProcessorState;
         if (structuredLogitProcessor && !structuredExecutionData.empty())
         {
             nlohmann::json js = nlohmann::json::parse(structuredExecutionData);
-            currentLogitProcessorState = structuredLogitProcessor->createRequestState(
+            currentLogitProcessorState = structuredLogitProcessor->startRequest(
                 inputTokens.size(), endId.value_or(-1), js);
-
             if (currentLogitProcessorState) {
                 logitsPostProcessorName = executor::Request::kBatchedPostProcessorName;
                 static_assert(sizeof(executor::IdType) >= sizeof(void*));
-                clientId = reinterpret_cast<executor::IdType>(reinterpret_cast<std::uintptr_t>(currentLogitProcessorState.get()));
+                clientId = currentLogitProcessorState->get_client_id();
             }
         }
         logitProcessorStates.emplace_back(std::move(currentLogitProcessorState));
