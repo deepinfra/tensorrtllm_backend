@@ -100,7 +100,7 @@ struct RequestData
     std::shared_ptr<std::set<executor::IdType>> pendingBatchedRequestIds;
     executor::RequestType requestType;
     bool returnPerfMetrics;
-    std::unique_ptr<StructuredLogitProcessorRequestState> structuredExecutionState;
+    std::unique_ptr<FreeStateHolder> structuredExecutionState;
 };
 
 //
@@ -217,7 +217,7 @@ private:
     std::vector<executor::Request> createExecutorRequests(TRITONBACKEND_Request* request,
         bool excludeInputFromOutput, bool isDecoupled, executor::ModelType modelType, bool isOrchestratorMode,
         bool specDecFastLogits, std::optional<executor::LookaheadDecodingConfig> const& lookaheadDecodingConfig,
-        std::vector<std::unique_ptr<StructuredLogitProcessorRequestState>> &logitProcessorStates);
+        std::vector<std::unique_ptr<FreeStateHolder>> &logitProcessorStates);
 
     /// @brief Fill in a triton response based on executor response
     std::tuple<TRITONBACKEND_Response*, bool, TRITONSERVER_Error*, int64_t> fillTritonResponse(

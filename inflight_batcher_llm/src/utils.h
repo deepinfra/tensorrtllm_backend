@@ -219,7 +219,7 @@ std::vector<executor::Request> createRequestsFromInputTensors(std::vector<InputT
     executor::RequestType requestType, bool isOrchestrator, bool specDecFastLogits,
     std::optional<executor::LookaheadDecodingConfig> const& executorLookaheadConfig,
     StructuredBatchedLogitProcessor *structuredLogitProcessor, const std::string &structuredExecutionData,
-    std::vector<std::unique_ptr<StructuredLogitProcessorRequestState>> &logitProcessorStates);
+    std::vector<std::unique_ptr<FreeStateHolder>> &logitProcessorStates);
 
 /// @brief get the requestId of the request and update requestIdStrMap
 /// @return Returns 0 if not specified. Throws an error if request_id cannot be convert to uint64_t
