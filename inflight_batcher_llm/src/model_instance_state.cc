@@ -681,7 +681,7 @@ bool ModelInstanceState::handleStopRequest(TRITONBACKEND_Request* request, std::
 // Split batched TRITONBACKEND_Request into one executor:Request object per sample.
 std::vector<executor::Request> ModelInstanceState::createExecutorRequests(
     TRITONBACKEND_Request* request, bool excludeInputFromOutput, bool isDecoupled, executor::ModelType modelType,
-    std::vector<std::unique_ptr<StructuredLogitProcessorRequestState>> &logitProcessorStates)
+    std::vector<std::unique_ptr<FreeStateHolder>> &logitProcessorStates)
 {
     auto inputsTensors = utils::readInputsTensors(request);
     bool streaming = utils::getRequestBooleanInputTensor(request, kStreamingInputTensorName);
@@ -716,7 +716,7 @@ void ModelInstanceState::enqueue(TRITONBACKEND_Request** requests, uint32_t cons
                 continue;
             }
 
-            std::vector<std::unique_ptr<StructuredLogitProcessorRequestState>> logitProcessorStates;
+            std::vector<std::unique_ptr<FreeStateHolder>> logitProcessorStates;
 
             auto executorRequests = createExecutorRequests(
                 request, mInstanceSpecificConfig.excludeInputFromOutput, isDecoupled(), mModelType, logitProcessorStates);
