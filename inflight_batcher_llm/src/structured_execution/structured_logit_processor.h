@@ -28,6 +28,9 @@
 #include <string>
 #include <unordered_map>
 
+#include <unistd.h>
+#include <fcntl.h>
+
 #include "tensorrt_llm/executor/tensor.h"
 #include "tensorrt_llm/executor/types.h"
 #include "tensorrt_llm/executor/executor.h"
@@ -78,6 +81,27 @@ void invokeApplyLogitMask(
     T* const* logits, SizeType32 vocabSize, std::int32_t *states, std::int32_t *end_ids, SizeType32 batchSize,
     const bool *maskVector, SizeType32 maskTokenSizePadded, struct CUstream_st* stream);
 
+class StructuredBatchedLogitProcessor;
+
+class FreeStateHolder
+{
+    StructuredBatchedLogitProcessor *owner;
+    uint32_t file_id;
+    uint32_t client_epoch;
+
+public:
+    FreeStateHolder(StructuredBatchedLogitProcessor *owner, uint32_t file_id, uint32_t client_epoch)
+        : owner(owner), file_id(file_id), client_epoch(client_epoch) {
+    }
+    ~FreeStateHolder();
+    uint32_t get_file_id() {
+        return file_id;
+    }
+    tensorrt_llm::executor::IdType get_client_id() {
+        return (tensorrt_llm::executor::IdType)((((uint64_t)client_epoch) << 32) | file_id);
+    }
+};
+
 class StructuredBatchedLogitProcessor
 {
 protected:
@@ -91,6 +115,13 @@ protected:
     virtual size_t getPaddedTokenSize() = 0;
 
 private:
+
+    std::vector<std::unique_ptr<StructuredLogitProcessorRequestState>> state_objects;
+    std::vector<int> state_fds;
+    std::vector<uint32_t> client_epochs;
+    std::vector<uint32_t> next_client_epochs;
+    std::vector<uint32_t> free_state_list;
+
     Tensor current_states_cpu;
     Tensor logit_ptrs_cpu;
     Tensor current_states_gpu;
@@ -98,6 +129,38 @@ private:
     Tensor logit_ptrs_gpu;
     Tensor state_mask_tensor_gpu;
     Tensor end_ids_gpu;
+
+    StructuredLogitProcessorRequestState* getRequestState(uint64_t client_id) {
+        uint32_t this_epoch_id = (uint32_t)(client_id >> 32);
+        uint32_t file_id = (uint32_t)client_id;
+        TLLM_CHECK(file_id >= 0 && file_id < client_epochs.size());
+        if (client_epochs[file_id] == this_epoch_id) {
+            return state_objects[file_id].get();
+        }
+        client_epochs[file_id] = this_epoch_id;
+        state_objects[file_id].reset();
+        int fd = state_fds[file_id];
+        int num_input_tokens = -1;
+        int end_id = -1;
+        int str_len = -1;
+        read(fd, &num_input_tokens, sizeof(int));
+        read(fd, &end_id, sizeof(int));
+        read(fd, &str_len, sizeof(int));
+        if (str_len <= 0 || num_input_tokens < 0 || end_id < 0) {
+            return nullptr;
+        }
+        char *json_buf = new char[str_len];
+        bool success = (int)read(fd, json_buf, str_len) == str_len;
+        lseek(fd, 0, SEEK_SET);
+        if (success) {
+            std::string structuredExecutionData (json_buf, json_buf + str_len);
+            nlohmann::json json_settings = nlohmann::json::parse(structuredExecutionData);
+            state_objects[file_id] = createRequestState(num_input_tokens, end_id, json_settings);
+        }
+        delete []json_buf;
+
+        return state_objects[file_id].get();
+    }
 
     template<class T>
     void executeTyped(
@@ -127,11 +190,11 @@ private:
             {
                 current_states_cpu_data[i] = -1;
                 logit_ptrs_cpu_data[i] = reinterpret_cast<T*>(logits_batch[i].getData());
-                std::uintptr_t client_id = (std::uintptr_t)(client_ids_batch[i].value_or(0));
-                if (client_id != 0)
+                uint64_t client_id = (uint64_t)(client_ids_batch[i].value_or((uint64_t)-1));
+                if (client_id != (uint64_t)-1)
                 {
                     StructuredLogitProcessorRequestState* state;
-                    state = reinterpret_cast<StructuredLogitProcessorRequestState*>(client_id);
+                    state = getRequestState(client_id);
                     hasJson = true;
                     state->executeTokens(ids_batch[i]);
                     end_ids_cpu_data[i] = state->end_id;
@@ -156,6 +219,9 @@ private:
                 reinterpret_cast<struct CUstream_st*>(stream_ptr->get()));
         }
     }
+protected:
+    virtual std::unique_ptr<StructuredLogitProcessorRequestState> createRequestState(
+        int num_input_tokens, int end_id, const json &json_settings) = 0;
 
 public:
     explicit StructuredBatchedLogitProcessor(int max_batch_size)
@@ -163,6 +229,20 @@ public:
           logit_ptrs_cpu(Tensor::cpu(DataType::kINT64, Shape{max_batch_size})),
           end_ids_cpu(Tensor::cpu(DataType::kINT32, Shape{max_batch_size}))
     {
+        state_objects.resize(max_batch_size);
+        client_epochs.resize(max_batch_size, (uint32_t)-1);
+        next_client_epochs.resize(max_batch_size);
+        for (uint32_t file_id = 0; file_id < (uint32_t)max_batch_size; file_id++) {
+            char filename[100] = {0};
+            snprintf(filename, 100, "/dev/shm/json_%d_data", file_id);
+            int fd = open(filename, O_RDWR | O_CREAT, 0666);
+            if (fd == -1) {
+                TLLM_LOG_ERROR("Unable to open output file %s for w+", filename);
+            }
+            state_fds.push_back(fd);
+            free_state_list.push_back(file_id);
+        }
+
         //cudaMalloc(&current_states_device, sizeof(int) * max_batch_size);
         current_states_cpu.setZero();
         logit_ptrs_cpu.setZero();
@@ -172,11 +252,43 @@ public:
         cudaFree(current_states_gpu.getData());
         cudaFree(logit_ptrs_gpu.getData());
         cudaFree(end_ids_gpu.getData());
+        for (int fd : state_fds) {
+            close(fd);
+        }
     }
 
-    virtual std::unique_ptr<StructuredLogitProcessorRequestState> createRequestState(
-        int num_input_tokens, int end_id, const json &json_settings) = 0;
     virtual bool isInitialized() = 0;
+
+    std::unique_ptr<FreeStateHolder> startRequest(int num_input_tokens, int end_id, const json &json_settings) {
+        if (free_state_list.empty()) {
+            TLLM_LOG_ERROR("Out of states: Unable to create a json logit processor.");
+            return nullptr;
+        }
+        // Create throwaway object to ensure it is a valid request.
+        if (createRequestState(num_input_tokens, end_id, json_settings)) {
+            std::string json_str = to_string(json_settings);
+            if (json_str.size() >= INT_MAX || json_str.empty()) {
+                return nullptr;
+            }
+            uint32_t file_id = free_state_list.back();
+            free_state_list.pop_back();
+            uint32_t client_epoch = ++next_client_epochs[file_id];
+            std::unique_ptr<FreeStateHolder> ret = std::make_unique<FreeStateHolder>(this, file_id, client_epoch);
+            int str_len = (int)json_str.size();
+            int fd = state_fds[ret->get_file_id()];
+            write(fd, &num_input_tokens, sizeof(int));
+            write(fd, &end_id, sizeof(int));
+            write(fd, &str_len, sizeof(int));
+            write(fd, json_str.data(), str_len);
+            lseek(fd, 0, SEEK_SET);
+            return ret;
+        }
+        return nullptr;
+    }
+
+    void release_file_id(uint32_t file_id) {
+        free_state_list.push_back(file_id);
+    }
 
     void operator()(
         std::vector<IdType> const&req_ids_batch,
@@ -201,5 +313,9 @@ public:
     }
 
 };
+
+inline FreeStateHolder::~FreeStateHolder() {
+    owner->release_file_id(file_id);
+}
 
 }
