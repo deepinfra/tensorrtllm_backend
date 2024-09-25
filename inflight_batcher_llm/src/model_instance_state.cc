@@ -576,23 +576,17 @@ executor::ExecutorConfig ModelInstanceState::getExecutorConfigFromParams()
             structuredExecutionSafetensorsPath.c_str(), max_batch_size);
         mStructuredExecutionLogitProcessor = std::make_unique<JsonBatchedLogitProcessor>(
             max_batch_size, structuredExecutionSafetensorsPath);
-        if (mStructuredExecutionLogitProcessor->isInitialized()) {
-            StructuredBatchedLogitProcessor &proc_ref = *mStructuredExecutionLogitProcessor;
-            std::optional<tensorrt_llm::executor::LogitsPostProcessorBatched> batched_post_processor = [&proc_ref](
-                std::vector<executor::IdType> const&req_ids_batch,
-                std::vector<executor::Tensor> &logits_batch,
-                std::vector<std::reference_wrapper<executor::BeamTokens const>> const&ids_batch,
-                executor::StreamPtr const&stream_ptr,
-                std::vector<std::optional<executor::IdType>> const&client_ids_batch) -> void {
-                proc_ref(req_ids_batch, logits_batch, ids_batch, stream_ptr, client_ids_batch);
-            };
-            // If set to true, logits post processor will run on all TP ranks in last PP rank
-            logit_post_processor_config = executor::LogitsPostProcessorConfig(std::nullopt, batched_post_processor, true);
-            TLLM_LOG_INFO("Successfully loaded logit processor at %s", structuredExecutionSafetensorsPath.c_str());
-        } else {
-            mStructuredExecutionLogitProcessor.reset();
-            TLLM_LOG_ERROR("Failed to load logit processor at %s", structuredExecutionSafetensorsPath.c_str());
-        }
+        StructuredBatchedLogitProcessor &proc_ref = *mStructuredExecutionLogitProcessor;
+        std::optional<tensorrt_llm::executor::LogitsPostProcessorBatched> batched_post_processor = [&proc_ref](
+            std::vector<executor::IdType> const&req_ids_batch,
+            std::vector<executor::Tensor> &logits_batch,
+            std::vector<std::reference_wrapper<executor::BeamTokens const>> const&ids_batch,
+            executor::StreamPtr const&stream_ptr,
+            std::vector<std::optional<executor::IdType>> const&client_ids_batch) -> void {
+            proc_ref(req_ids_batch, logits_batch, ids_batch, stream_ptr, client_ids_batch);
+        };
+        // If set to true, logits post processor will run on all TP ranks in last PP rank
+        logit_post_processor_config = executor::LogitsPostProcessorConfig(std::nullopt, batched_post_processor, true);
     }
     auto execConfig = executor::ExecutorConfig{maxBeamWidth, schedulerConfig, kvCacheConfig, enableChunkedContext,
         normalizeLogProbs, iterStatsMaxIterations, requestStatsMaxIterations, batchingType, std::nullopt, std::nullopt,
