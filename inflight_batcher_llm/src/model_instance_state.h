@@ -35,7 +35,7 @@
 #include "tensorrt_llm/batch_manager/namedTensor.h"
 #include "tensorrt_llm/executor/types.h"
 
-#include "model_state.h"
+#include "kv_cache_controller.h"
 
 #ifdef TRITON_ENABLE_METRICS
 #include "custom_metrics_reporter/custom_metrics_reporter.h"
@@ -145,6 +145,10 @@ public:
         return mGpuDeviceIds;
     }
 
+    KVCacheController &getKVCacheController();
+
+    KVCacheManager &getKVCacheManager();
+
 private:
     /// @brief Get batching type
     executor::BatchingType getBatchingTypeFromParams();
@@ -222,6 +226,7 @@ private:
 
     std::unordered_map<executor::IdType, RequestData> mRequestIdToRequestData;
     std::unordered_map<std::string, std::set<executor::IdType>> mTritonRequestIdToRequestIds;
+    std::unique_ptr<KVCacheController> mKVCacheController;
     std::mutex mRequestIdToRequestDataMutex;
 
     // The type of model (encoder-only, decoder-only, encoder-decoder)

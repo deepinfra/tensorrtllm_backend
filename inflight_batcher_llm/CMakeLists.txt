@@ -109,7 +109,8 @@ FetchContent_MakeAvailable(repo-common repo-core repo-backend)
 configure_file(src/libtriton_tensorrtllm.ldscript
                libtriton_tensorrtllm.ldscript COPYONLY)
 
-set(COMMON_SRCS src/model_instance_state.cc src/model_state.cc src/utils.cc)
+set(COMMON_SRCS src/model_instance_state.cc src/model_state.cc src/utils.cc
+        src/kv_cache_controller.h src/kv_cache_wrapper.cc)
 
 add_library(triton-tensorrt-llm-common SHARED ${COMMON_SRCS})
 

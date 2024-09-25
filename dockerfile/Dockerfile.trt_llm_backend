@@ -44,6 +44,7 @@ FROM dev as trt_llm_builder
 WORKDIR /app
 COPY scripts scripts
 COPY tensorrt_llm tensorrt_llm
+RUN sed -i 's/{executor_worker}//; /executor_worker/,+2d; /if not on_windows:/d' tensorrt_llm/scripts/build_wheel.py; sed -i '/add_subdirectory.executor_worker/d' tensorrt_llm/cpp/tensorrt_llm/CMakeLists.txt; a_file=../tensorrt_llm/cpp/tensorrt_llm/batch_manager/x86_64-linux-gnu/libtensorrt_llm_batch_manager_static.pre_cxx11.a; mkdir foo; cd foo; ar x $a_file; find -type f -not -name kvCacaheManager.cpp.o -exec perl -pi -e "s/KVCacheManager([1-9])/KVCacheWrapper\$1/g" {} \; ; ar r $a_file `ar t $a_file`;
 RUN cd tensorrt_llm && python3 scripts/build_wheel.py --trt_root="${TRT_ROOT}" -i -c && cd ..
 
 FROM trt_llm_builder as trt_llm_backend_builder
@@ -64,4 +65,5 @@ RUN mkdir /opt/tritonserver/backends/tensorrtllm
 ENV LD_LIBRARY_PATH=/opt/tritonserver/backends/tensorrtllm:${LD_LIBRARY_PATH}
 COPY --from=trt_llm_backend_builder /app/inflight_batcher_llm/build/libtriton_tensorrtllm.so /opt/tritonserver/backends/tensorrtllm
 COPY --from=trt_llm_backend_builder /app/inflight_batcher_llm/build/libtriton_tensorrtllm_common.so /opt/tritonserver/backends/tensorrtllm
-COPY --from=trt_llm_backend_builder /app/inflight_batcher_llm/build/trtllmExecutorWorker /opt/tritonserver/backends/tensorrtllm
+# kvCacheWrapper interferes with ExecutorWorker
+#COPY --from=trt_llm_backend_builder /app/inflight_batcher_llm/build/trtllmExecutorWorker /opt/tritonserver/backends/tensorrtllm

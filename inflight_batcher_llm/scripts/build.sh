@@ -51,5 +51,6 @@ if [[ "$BUILD_UNIT_TESTS" == "true" ]]; then
   BUILD_TESTS_ARG="-DBUILD_TESTS=ON"
 fi
 
+sed -i '/find_program/,+10d' /app/inflight_batcher_llm/CMakeLists.txt # kvCacheWrapper interferes with ExecutorWorker
 cmake -DCMAKE_INSTALL_PREFIX:PATH=`pwd`/install ${BUILD_TESTS_ARG} ..
 make install

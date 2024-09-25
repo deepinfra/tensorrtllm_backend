@@ -29,6 +29,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include "tensorrt_llm/batch_manager/kvCacheManager.h"
+
 using executor::SizeType32;
 
 namespace triton::backend::inflight_batcher_llm
@@ -643,6 +645,12 @@ std::vector<executor::Request> ModelInstanceState::createExecutorRequests(
 void ModelInstanceState::enqueue(TRITONBACKEND_Request** requests, uint32_t const request_count)
 {
 
+    auto gpt_model = *(const TrtGptModelInflightBatching**&)*mExecutor;
+    auto kvCacheManager = gpt_model->getKVCacheManager();
+
+    TLLM_LOG_INFO("TESTING KVCM : Number of used blocks: %d | Max blocks: %d | Tokens per block: %d",
+            kvCacheManager->getUsedNumBlocks(), kvCacheManager->getMaxNumBlocks(), kvCacheManager->getTokensPerBlock());
+
     uint64_t exec_start_ns{0};
     SET_TIMESTAMP(exec_start_ns);
 
@@ -713,6 +721,17 @@ void ModelInstanceState::enqueue(TRITONBACKEND_Request** requests, uint32_t cons
         }
     }
     return;
+}
+
+KVCacheController &ModelInstanceState::getKVCacheController() {
+    if (!mKVCacheController) {
+        mKVCacheController = std::make_unique<KVCacheController>((ExecutorRef&)*mExecutor);
+    }
+    return *mKVCacheController;
+}
+
+KVCacheManager &ModelInstanceState::getKVCacheManager() {
+    return getKVCacheController().getKVCacheManager();
 }
 
 TRITONSERVER_Error* ModelInstanceState::reportBaseMetrics(RequestData& requestData, TRITONSERVER_Error* error)
