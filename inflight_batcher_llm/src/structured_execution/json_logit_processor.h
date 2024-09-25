@@ -68,6 +68,7 @@ public:
 
 class JsonBatchedLogitProcessor : public StructuredBatchedLogitProcessor
 {
+    std::thread initialization_thread;
     std::shared_ptr<PrecalculatedStructureGraph> precalculated_structure_graph;
 
 public:
@@ -75,12 +76,20 @@ public:
     : StructuredBatchedLogitProcessor(max_batch_size)
     {
         FILE* fp = fopen(safetensors_filename.c_str(), "rb");
-        precalculated_structure_graph = parse_graph(fp);
-        if (!precalculated_structure_graph)
-        {
-            fprintf(stderr, "Failed to read input tensors %s: %d\n", safetensors_filename.c_str(), errno);
-        }
-        fclose(fp);
+
+        initialization_thread = std::thread([this, safetensors_filename, fp]() {
+            precalculated_structure_graph = parse_graph(fp);
+            fclose(fp);
+            if (precalculated_structure_graph) {
+                TLLM_LOG_INFO("Successfully loaded logit processor at %s", safetensors_filename.c_str());
+            } else {
+                TLLM_LOG_ERROR("Failed to read logit processor input tensors %s: %d", safetensors_filename.c_str(), errno);
+            }
+        });
+    }
+
+    virtual ~JsonBatchedLogitProcessor() {
+        initialization_thread.join(); // Prevents destructor crash due to initialization failure.
     }
 
     const uint8_t *getStateMaskData() override {
@@ -93,12 +102,21 @@ public:
         return precalculated_structure_graph->tokenizer_data->padded_token_size;
     }
     bool isInitialized() override {
+        if (initialization_thread.joinable()) {
+            initialization_thread.join();
+        }
         return (bool)precalculated_structure_graph;
     }
 
     std::unique_ptr<StructuredLogitProcessorRequestState> createRequestState(
         int num_input_tokens, int end_id, const json &json_settings) override
     {
+        if (initialization_thread.joinable()) {
+            initialization_thread.join();
+        }
+        if (!isInitialized()) {
+            return {};
+        }
         if (!json_settings.contains("type")) {
             return {};
         }
