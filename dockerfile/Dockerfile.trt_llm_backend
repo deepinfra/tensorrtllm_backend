@@ -16,7 +16,7 @@ RUN pip uninstall -y tensorrt
 FROM base as dev
 
 # Download & install internal TRT release
-COPY tensorrt_llm/docker/common/install_tensorrt.sh /tmp/
+COPY dockerfile/install_tensorrt_24.09.sh /tmp/install_tensorrt.sh
 RUN bash /tmp/install_tensorrt.sh && rm /tmp/install_tensorrt.sh
 ENV LD_LIBRARY_PATH=/usr/local/tensorrt/lib:${LD_LIBRARY_PATH}
 ENV TRT_ROOT=/usr/local/tensorrt
