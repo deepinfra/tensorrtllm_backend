@@ -1,0 +1,30 @@
+diff --git a/dockerfile/Dockerfile.trt_llm_backend b/dockerfile/Dockerfile.trt_llm_backend
+index 72ffa75..6c7ad37 100644
+--- a/dockerfile/Dockerfile.trt_llm_backend
++++ b/dockerfile/Dockerfile.trt_llm_backend
+@@ -44,7 +44,8 @@ FROM dev as trt_llm_builder
+ WORKDIR /app
+ COPY scripts scripts
+ COPY tensorrt_llm tensorrt_llm
+-RUN cd tensorrt_llm && python3 scripts/build_wheel.py --trt_root="${TRT_ROOT}" -i -c && cd ..
++RUN cd tensorrt_llm && python3 scripts/build_wheel.py -b RelWithDebInfo --trt_root="${TRT_ROOT}" -i -c && cd ..
++RUN apt-get update && apt-get install -y gdb gdbserver strace
+ 
+ FROM trt_llm_builder as trt_llm_backend_builder
+ 
+diff --git a/inflight_batcher_llm/scripts/build.sh b/inflight_batcher_llm/scripts/build.sh
+index a8e4eca..bae34c1 100644
+--- a/inflight_batcher_llm/scripts/build.sh
++++ b/inflight_batcher_llm/scripts/build.sh
+@@ -50,8 +50,9 @@ if [[ "$BUILD_UNIT_TESTS" == "true" ]]; then
+   BUILD_TESTS_ARG="-DBUILD_TESTS=ON"
+ fi
+ 
+-cmake -DCMAKE_INSTALL_PREFIX:PATH=`pwd`/install ${BUILD_TESTS_ARG} ..
+-make install
++ln -sf build_RelWithDebInfo /app/inflight_batcher_llm/../tensorrt_llm/cpp/build
++cmake -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_INSTALL_PREFIX:PATH=`pwd`/install ${BUILD_TESTS_ARG} ..
++make -j8 install
+ 
+ mkdir -p /opt/tritonserver/backends/tensorrtllm
+ cp libtriton_tensorrtllm.so /opt/tritonserver/backends/tensorrtllm
