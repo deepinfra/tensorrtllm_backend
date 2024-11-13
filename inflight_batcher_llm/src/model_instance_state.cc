@@ -614,7 +614,17 @@ executor::ExecutorConfig ModelInstanceState::getExecutorConfigFromParams()
             proc_ref(req_ids_batch, logits_batch, ids_batch, stream_ptr, client_ids_batch);
         };
         // If set to true, logits post processor will run on all TP ranks in last PP rank
-        logit_post_processor_config = executor::LogitsPostProcessorConfig(std::nullopt, batched_post_processor, true);
+        logit_post_processor_config = executor::LogitsPostProcessorConfig(std::nullopt, batched_post_processor, false);
+    } else {
+        std::optional<tensorrt_llm::executor::LogitsPostProcessorBatched> batched_post_processor = [](
+            std::vector<executor::IdType> const&req_ids_batch,
+            std::vector<executor::Tensor> &logits_batch,
+            std::vector<std::reference_wrapper<executor::BeamTokens const>> const&ids_batch,
+            executor::StreamPtr const&stream_ptr,
+            std::vector<std::optional<executor::IdType>> const&client_ids_batch) -> void {
+        };
+        // If set to true, logits post processor will run on all TP ranks in last PP rank
+        logit_post_processor_config = executor::LogitsPostProcessorConfig(std::nullopt, batched_post_processor, false);
     }
     auto execConfig = executor::ExecutorConfig{maxBeamWidth, schedulerConfig, kvCacheConfig, enableChunkedContext,
         normalizeLogProbs, iterStatsMaxIterations, requestStatsMaxIterations, batchingType, std::nullopt, std::nullopt,
