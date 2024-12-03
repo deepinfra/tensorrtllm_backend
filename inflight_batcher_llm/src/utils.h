@@ -115,6 +115,7 @@ struct OutputFieldsNames
     static constexpr char const* batchIndex = "batch_index";
     static constexpr char const* sequenceIndex = "sequence_index";
     static constexpr char const* contextPhaseParams = "context_phase_params";
+    static constexpr char const* reusedTokens = "reused_tokens";
 };
 
 inline static std::string const kStopInputTensorName = "stop";
