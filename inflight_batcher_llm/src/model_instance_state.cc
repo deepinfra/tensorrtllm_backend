@@ -1098,6 +1098,15 @@ std::tuple<TRITONBACKEND_Response*, bool, TRITONSERVER_Error*> ModelInstanceStat
                     TLLM_THROW("contextParams must be present in the response");
                 }
             }
+            if (requestData.outputNames.count(OutputFieldsNames::reusedTokens) > 0)
+            {
+                std::vector<int64_t> batchIndexShape{1, 1};
+                auto batchIndexType = TRITONSERVER_TYPE_INT32;
+                auto batchIndexBuffer = utils::getResponseBuffer<int32_t>(
+                    tritonResponse, batchIndexShape, batchIndexType, OutputFieldsNames::reusedTokens);
+                std::vector<int32_t> batchIndexVec = {(int)requestData.requestStats.reusedBlocksPerRequest * tokensPerBlock};
+                utils::flatten<int32_t>(batchIndexVec, batchIndexBuffer, batchIndexShape);
+            }
         }
         else
         {
@@ -1124,6 +1133,24 @@ void ModelInstanceState::WaitForResponse()
     {
         std::chrono::milliseconds waitTime(1);
         auto responses = mExecutor->awaitResponses(waitTime);
+
+        auto latestIterationRequestStats = mExecutor->getLatestRequestStats();
+        for (executor::RequestStatsPerIteration &iteration : latestIterationRequestStats)
+        {
+            std::lock_guard<std::mutex> lock(mRequestIdToRequestDataMutex);
+            for (executor::RequestStats &requestStats : iteration.requestStats)
+            {
+                executor::IdType requestId = requestStats.id;
+                auto it = mRequestIdToRequestData.find(requestId);
+                if (it == mRequestIdToRequestData.end())
+                {
+                    continue;
+                }
+                RequestData& requestData = it->second;
+                requestData.requestStats = requestStats;
+            }
+        }
+
         uint64_t compute_end_ns{0};
         SET_TIMESTAMP(compute_end_ns);
 
@@ -1234,6 +1261,7 @@ void ModelInstanceState::WaitForStats()
             if (stat.kvCacheStats.has_value())
             {
                 auto const& kvStats = stat.kvCacheStats.value();
+                tokensPerBlock = kvStats.tokensPerBlock;
                 statJson.append("\"Free KV cache blocks\":" + std::to_string(kvStats.freeNumBlocks) + ",");
                 statJson.append("\"Max KV cache blocks\":" + std::to_string(kvStats.maxNumBlocks) + ",");
                 statJson.append("\"Tokens per KV cache block\":" + std::to_string(kvStats.tokensPerBlock) + ",");

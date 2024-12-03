@@ -93,6 +93,7 @@ struct RequestData
     std::shared_ptr<std::set<executor::IdType>> pendingBatchedRequestIds;
     executor::RequestType requestType;
     std::unique_ptr<FreeStateHolder> structuredExecutionState;
+    executor::RequestStats requestStats;
 };
 
 //
@@ -255,6 +256,8 @@ private:
 
     /// @brief Is speculative decoding fast logits transfer enabled
     bool mSpeculativeDecodingFastLogits;
+
+    std::atomic<int> tokensPerBlock = 0;
 
 #ifdef TRITON_ENABLE_METRICS
     std::unique_ptr<custom_metrics_reporter::CustomMetricsReporter> custom_metrics_reporter_;
