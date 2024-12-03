@@ -154,6 +154,7 @@ struct OutputFieldsNames
     static constexpr char const* acceptanceRate = "acceptance_rate";
     static constexpr char const* totalAcceptedDraftTokens = "total_accepted_draft_tokens";
     static constexpr char const* totalDraftTokens = "total_draft_tokens";
+    static constexpr char const* reusedTokens = "reused_tokens";
 };
 
 inline static std::string const kStopInputTensorName = "stop";

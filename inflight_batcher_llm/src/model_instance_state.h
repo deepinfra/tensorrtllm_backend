@@ -101,6 +101,7 @@ struct RequestData
     executor::RequestType requestType;
     bool returnPerfMetrics;
     std::unique_ptr<FreeStateHolder> structuredExecutionState;
+    executor::RequestStats requestStats;
 };
 
 //
@@ -288,6 +289,8 @@ private:
 
     /// @brief Lookahead Decoding Configuration of this instance
     std::optional<executor::LookaheadDecodingConfig> mExecutorLookaheadDecodingConfig{std::nullopt};
+
+    std::atomic<int> tokensPerBlock = 0;
 
 #ifdef TRITON_ENABLE_METRICS
     std::unique_ptr<custom_metrics_reporter::CustomMetricsReporter> custom_metrics_reporter_;
