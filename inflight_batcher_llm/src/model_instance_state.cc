@@ -182,8 +182,34 @@ executor::KvCacheConfig ModelInstanceState::getKvCacheConfigFromParams()
             = std::vector<SizeType32>(maxAttentionWindow.value().begin(), maxAttentionWindow.value().end());
     }
 
+    std::optional<int32_t> secondaryOffloadMinPriority = std::nullopt;
+    try
+    {
+        secondaryOffloadMinPriority = model_state_->GetParameter<int32_t>("secondary_offload_min_priority");
+    }
+    catch (std::exception const& e)
+    {
+        // If parameter is not specified, just ignore
+        TLLM_LOG_WARNING(
+            "secondary_offload_min_priority is not specified, will "
+            "use default value null");
+    }
+
+    try
+    {
+        kvEventBufferMaxSize = (size_t)model_state_->GetParameter<int32_t>("kv_event_buffer_max_size");
+    }
+    catch (std::exception const& e)
+    {
+        // If parameter is not specified, just ignore
+        TLLM_LOG_WARNING(
+            "kv_event_buffer_max_size is not specified, will "
+            "use default value 0");
+    }
+
     return executor::KvCacheConfig(enableKVCacheReuse, maxTokensInPagedKvCache, maxAttentionWindowVec, sinkTokenLength,
-        kvCacheFreeGpuMemFraction, kvCacheHostCacheSize, kvCacheOnboardBlocks, crossKvCacheFraction);
+        kvCacheFreeGpuMemFraction, kvCacheHostCacheSize, kvCacheOnboardBlocks, crossKvCacheFraction,
+        secondaryOffloadMinPriority, kvEventBufferMaxSize);
 }
 
 executor::ExtendedRuntimePerfKnobConfig ModelInstanceState::getExtendedRuntimePerfKnobConfigFromParams()
@@ -725,6 +751,12 @@ ModelInstanceState::ModelInstanceState(ModelState* model_state, TRITONBACKEND_Mo
         mStopWaitForResponse = false;
         mWaitForResponseThread = std::thread(&ModelInstanceState::WaitForResponse, this);
 
+        mStopWaitForKVCacheEvents = false;
+        if (kvEventBufferMaxSize > 0)
+        {
+            mWaitForKVCacheEventsThread = std::thread(&ModelInstanceState::WaitForKVCacheEvents, this);
+        }
+
         mStopWaitForStats = false;
         mWaitForStatsThread = std::thread(&ModelInstanceState::WaitForStats, this);
 
@@ -756,6 +788,50 @@ void ModelInstanceState::sendEnqueueResponse(TRITONBACKEND_Request* request, TRI
     LOG_IF_ERROR(TRITONBACKEND_ResponseSend(tritonResponse, TRITONSERVER_RESPONSE_COMPLETE_FINAL, error),
         "Cannot send response");
     LOG_IF_ERROR(TRITONBACKEND_RequestRelease(request, TRITONSERVER_REQUEST_RELEASE_ALL), "Cannot release request");
+}
+
+bool ModelInstanceState::handleKVCacheEventsRequest(TRITONBACKEND_Request* request, std::string const& tritonRequestId)
+{
+    bool kvRequest = utils::getRequestBooleanInputTensor(request, kKVCacheEventsInputTensorName);
+    if (!kvRequest)
+    {
+        return false;
+    }
+    if (kvEventBufferMaxSize == 0) {
+        TRITONSERVER_Error* error = TRITONSERVER_ErrorNew(TRITONSERVER_ERROR_UNAVAILABLE,
+            "Cannot stream kv_cache_events when config.pbtxt has kv_event_buffer_max_size == 0");
+        TRITONBACKEND_ResponseFactory* factory;
+        LOG_IF_ERROR(TRITONBACKEND_ResponseFactoryNew(&factory, request), "failed to create triton response factory");
+        TRITONBACKEND_Response* tritonResponse;
+        LOG_IF_ERROR(TRITONBACKEND_ResponseNewFromFactory(&tritonResponse, factory), "Failed to create response");
+        LOG_IF_ERROR(TRITONBACKEND_ResponseSend(tritonResponse, TRITONSERVER_RESPONSE_COMPLETE_FINAL, error),
+            "Cannot send response");
+        LOG_IF_ERROR(TRITONBACKEND_RequestRelease(request, TRITONSERVER_REQUEST_RELEASE_ALL), "Cannot release request");
+        return true;
+    }
+
+    TRITONBACKEND_ResponseFactory* factory;
+    LOG_IF_ERROR(TRITONBACKEND_ResponseFactoryNew(&factory, request), "failed to create triton KVCacheEvents factory");
+
+    auto requestOutputNames = utils::getRequestOutputNames(request);
+
+    std::lock_guard<std::mutex> lock(mKVCacheEventsMutex);
+    auto iter = mKVCacheEventsRequests.emplace(KVCacheEventsRequest{factory, request, requestOutputNames}).first;
+
+    std::vector<int64_t> hashVector;
+    std::vector<int64_t> parentHashVector;
+    std::vector<int64_t> rootHashVector;
+    std::vector<int32_t> cacheLevelVector;
+    for (const std::unordered_map<uint64_t, KVCacheBlockDataWithParent>::value_type &kv : mKVCacheMirror) {
+        hashVector.push_back(kv.first);
+        parentHashVector.push_back(kv.second.parentHash);
+        rootHashVector.push_back(kv.second.rootHash);
+        cacheLevelVector.push_back(kv.second.cacheLevel);
+    }
+
+    sendKVCacheEvents(*iter, hashVector, parentHashVector, rootHashVector, cacheLevelVector);
+
+    return true;
 }
 
 bool ModelInstanceState::handleStopRequest(TRITONBACKEND_Request* request, std::string const& tritonRequestId)
@@ -834,6 +910,10 @@ void ModelInstanceState::enqueue(TRITONBACKEND_Request** requests, uint32_t cons
             {
                 continue;
             }
+            if (handleKVCacheEventsRequest(request, tritonRequestId))
+            {
+                continue;
+            }
 
             std::vector<std::unique_ptr<FreeStateHolder>> logitProcessorStates;
 
@@ -877,7 +957,8 @@ void ModelInstanceState::enqueue(TRITONBACKEND_Request** requests, uint32_t cons
                     std::move(RequestData{factory, request, tritonRequestId, inputTokensSize, beamWidthCopy,
                         std::move(requestOutputNames), {exec_start_ns, compute_start_ns, 0, 0}, batchIndex,
                         static_cast<int32_t>(requestIds.size()), numReturnSequences, requestIdsSet,
-                        executorRequest.getRequestType(), std::move(logitProcessorStates[batchIndex])}));
+                        executorRequest.getRequestType(),
+                        std::move(logitProcessorStates[batchIndex]), executor::RequestStats{} }));
             }
             if (tritonRequestId != "")
             {
@@ -1117,6 +1198,218 @@ std::tuple<TRITONBACKEND_Response*, bool, TRITONSERVER_Error*> ModelInstanceStat
     return {tritonResponse, isFinal, error};
 }
 
+void ModelInstanceState::sendKVCacheEvents(
+    const KVCacheEventsRequest &req,
+    const std::vector<int64_t> &hashVector,
+    const std::vector<int64_t> &parentHashVector,
+    const std::vector<int64_t> &rootHashVector,
+    const std::vector<int32_t> &cacheLevelVector)
+{
+    if (hashVector.empty()) {
+        return; // Avoid sending empty events.
+    }
+    TRITONBACKEND_Response* tritonResponse;
+    LOG_IF_ERROR(
+        TRITONBACKEND_ResponseNewFromFactory(&tritonResponse, req.factory), "Failed to create KVCacheEvents resp");
+
+    if (req.outputNames.count(OutputFieldsNames::kvHashes) > 0)
+    {
+        std::vector<int64_t> hashShape{1, static_cast<int64_t>(hashVector.size())};
+        auto hashType = TRITONSERVER_TYPE_UINT64;
+        auto hashBuffer = utils::getResponseBuffer<uint64_t>(
+            tritonResponse, hashShape, hashType, OutputFieldsNames::kvHashes);
+        utils::flatten<int64_t>(hashVector, hashBuffer, hashShape);
+    }
+    else
+    {
+        TLLM_THROW("%s tensor must be present in list of output tensors", OutputFieldsNames::kvHashes);
+    }
+
+    if (req.outputNames.count(OutputFieldsNames::kvParentHashes) > 0)
+    {
+        std::vector<int64_t> parentHashShape{1, static_cast<int64_t>(parentHashVector.size())};
+        auto parentHashType = TRITONSERVER_TYPE_UINT64;
+        auto parentHashBuffer = utils::getResponseBuffer<uint64_t>(
+            tritonResponse, parentHashShape, parentHashType, OutputFieldsNames::kvParentHashes);
+        utils::flatten<int64_t>(parentHashVector, parentHashBuffer, parentHashShape);
+    }
+    else
+    {
+        TLLM_THROW("%s tensor must be present in list of output tensors", OutputFieldsNames::kvHashes);
+    }
+
+    if (req.outputNames.count(OutputFieldsNames::kvRootHashes) > 0)
+    {
+        std::vector<int64_t> rootHashShape{1, static_cast<int64_t>(rootHashVector.size())};
+        auto rootHashType = TRITONSERVER_TYPE_UINT64;
+        auto rootHashBuffer = utils::getResponseBuffer<uint64_t>(
+            tritonResponse, rootHashShape, rootHashType, OutputFieldsNames::kvRootHashes);
+        utils::flatten<int64_t>(rootHashVector, rootHashBuffer, rootHashShape);
+    }
+    else
+    {
+        TLLM_THROW("%s tensor must be present in list of output tensors", OutputFieldsNames::kvHashes);
+    }
+
+    if (req.outputNames.count(OutputFieldsNames::kvCacheLevels) > 0)
+    {
+        std::vector<int64_t> cacheLevelShape{1, static_cast<int64_t>(cacheLevelVector.size())};
+        auto cacheLevelType = TRITONSERVER_TYPE_INT32;
+        auto cacheLevelBuffer = utils::getResponseBuffer<int32_t>(
+            tritonResponse, cacheLevelShape, cacheLevelType, OutputFieldsNames::kvCacheLevels);
+        utils::flatten<int32_t>(cacheLevelVector, cacheLevelBuffer, cacheLevelShape);
+    }
+    else
+    {
+        TLLM_THROW("%s tensor must be present in list of output tensors", OutputFieldsNames::kvCacheLevels);
+    }
+
+    TRITONSERVER_Error* error = nullptr;
+    LOG_IF_ERROR(TRITONBACKEND_ResponseSend(tritonResponse, 0, error), "Cannot send KVCacheEvents response");
+}
+
+void ModelInstanceState::WaitForKVCacheEvents()
+{
+    std::shared_ptr<executor::KVCacheEventManager> KVEventManager
+        = mExecutor->getKVCacheEventManager().value_or(std::shared_ptr<executor::KVCacheEventManager>());
+    while (!mStopWaitForKVCacheEvents)
+    {
+        std::chrono::milliseconds waitTime(10);
+        std::deque<executor::KVCacheEvent> latestEvents = KVEventManager->getLatestEvents(waitTime);
+
+        std::lock_guard<std::mutex> lock(mKVCacheEventsMutex);
+        std::vector<int64_t> hashVector;
+        std::vector<int64_t> parentHashVector;
+        std::vector<int64_t> rootHashVector;
+        std::vector<int32_t> cacheLevelVector;
+
+        for (executor::KVCacheEvent& event : latestEvents)
+        {
+            TLLM_CHECK(event.eventId == eventCounter++);
+            if (std::holds_alternative<executor::KVCacheStoredData>(event.data))
+            {
+                // Blocks have been stored into the radix tree
+                auto const& eventData = std::get<executor::KVCacheStoredData>(event.data);
+                // auto prevBlock = blockTable[eventData.parentHash.value_or(-1)];
+
+                //// This block should be in the tree
+                // TLLM_CHECK(blockTable.find(prevBlock->hash) != blockTable.end());
+
+                uint64_t parentHash = eventData.parentHash.value_or(KVCacheBlockDataWithParent::NULL_ID);
+                uint64_t rootHash = eventData.blocks[0].blockHash; // eventData.blocks are guaranteed in order
+                if (eventData.parentHash.has_value())
+                {
+                    auto iter = mKVCacheMirror.find(parentHash);
+                    TLLM_CHECK(iter != mKVCacheMirror.end());
+                    rootHash = iter->second.rootHash;
+                }
+
+                for (auto& block : eventData.blocks)
+                {
+                    TLLM_LOG_INFO(
+                        "Event ID %d: Block %04x was inserted into the radix tree with parent %04x at level %d prio %d.",
+                        event.eventId, block.blockHash, eventData.parentHash, block.cacheLevel, block.priority);
+
+                    hashVector.push_back(block.blockHash);
+                    parentHashVector.push_back(parentHash);
+                    rootHashVector.push_back(rootHash);
+                    cacheLevelVector.push_back(block.cacheLevel);
+                    mKVCacheMirror.emplace(block.blockHash, KVCacheBlockDataWithParent(block, parentHash, rootHash));
+                    parentHash = block.blockHash;
+                }
+            }
+            else if (std::holds_alternative<executor::KVCacheRemovedData>(event.data))
+            {
+                auto const& eventData = std::get<executor::KVCacheRemovedData>(event.data);
+
+                for (auto const& hash : eventData.blockHashes)
+                {
+                    TLLM_LOG_INFO("Event ID %d: Block %04x was removed from the radix tree.", event.eventId, hash);
+
+                    auto iter = mKVCacheMirror.find(hash);
+                    TLLM_CHECK(iter != mKVCacheMirror.end());
+
+                    hashVector.push_back(hash);
+                    parentHashVector.push_back(iter->second.parentHash);
+                    rootHashVector.push_back(iter->second.rootHash);
+                    cacheLevelVector.push_back(-1);
+                    mKVCacheMirror.erase(iter);
+                    // TODO: Check that the block has no children, and that the parent has the block listed as a child
+                    // TLLM_CHECK(block->nextBlocks.size() == 0);
+                    // TLLM_CHECK(block->prevBlock->nextBlocks.find(block->hash) != block->prevBlock->nextBlocks.end());
+                }
+            }
+            else if (std::holds_alternative<executor::KVCacheUpdatedData>(event.data))
+            {
+                auto const& eventData = std::get<executor::KVCacheUpdatedData>(event.data);
+                auto iter = mKVCacheMirror.find(eventData.blockHash);
+                TLLM_CHECK(iter != mKVCacheMirror.end());
+                KVCacheBlockDataWithParent& blockData = iter->second;
+
+                if (eventData.priority.has_value())
+                {
+                    // The block priority was updated
+                    TLLM_LOG_INFO("Event ID %d: Block %04x priority was changed from %d to %d", event.eventId,
+                        eventData.blockHash, eventData.priority->oldValue, eventData.priority->newValue);
+                    TLLM_CHECK(blockData.priority == eventData.priority->oldValue);
+                    blockData.priority = eventData.priority->newValue;
+                }
+
+                if (eventData.cacheLevel.has_value())
+                {
+                    // The block cache level was updated
+                    TLLM_LOG_INFO("Event ID %d: Block %04x cache level was changed from %d to %d", event.eventId,
+                        eventData.blockHash, eventData.cacheLevel->oldValue, eventData.cacheLevel->newValue);
+                    TLLM_CHECK(blockData.cacheLevel == eventData.cacheLevel->oldValue);
+                    blockData.cacheLevel = eventData.cacheLevel->newValue;
+                    hashVector.push_back(eventData.blockHash);
+                    parentHashVector.push_back(blockData.parentHash);
+                    rootHashVector.push_back(blockData.rootHash);
+                    cacheLevelVector.push_back(eventData.cacheLevel->newValue);
+                }
+            }
+            else if (std::holds_alternative<executor::KVCacheCreatedData>(event.data))
+            {
+                auto const& eventData = std::get<executor::KVCacheCreatedData>(event.data);
+                std::string levels = "";
+                for (SizeType32 lev : eventData.numBlocksPerCacheLevel)
+                {
+                    if (!levels.empty())
+                    {
+                        levels += ",";
+                    }
+                    levels += std::to_string(lev);
+                }
+                TLLM_LOG_INFO("Event ID %d: Cache created: {%s}.", event.eventId, levels);
+            }
+            else
+            {
+                TLLM_LOG_ERROR("Unsupported event type. This shouldn't happen!");
+            }
+        }
+        for (auto iter = mKVCacheEventsRequests.begin(); iter != mKVCacheEventsRequests.end();)
+        {
+            bool isCancelled = false;
+            LOG_IF_ERROR(TRITONBACKEND_ResponseFactoryIsCancelled(iter->factory, &isCancelled),
+                "Failed to query factory status");
+            if (isCancelled) {
+
+                LOG_IF_ERROR(
+                    TRITONBACKEND_RequestRelease(iter->tritonRequest, TRITONSERVER_REQUEST_RELEASE_ALL),
+                    "Cannot release request");
+
+                LOG_IF_ERROR(TRITONBACKEND_ResponseFactoryDelete(iter->factory), "Cannot delete response factory");
+
+                iter = mKVCacheEventsRequests.erase(iter); // goes to the next iterator and erases.
+            } else
+            {
+                sendKVCacheEvents(*iter, hashVector, parentHashVector, rootHashVector, cacheLevelVector);
+                ++iter;
+            }
+        }
+    }
+}
+
 void ModelInstanceState::WaitForResponse()
 {
     while (!mStopWaitForResponse)
@@ -1296,6 +1589,8 @@ void ModelInstanceState::WaitForStats()
             LOG_MESSAGE(TRITONSERVER_LOG_VERBOSE, statJson.c_str());
 #ifdef TRITON_ENABLE_METRICS
             LOG_IF_ERROR(custom_metrics_reporter_->UpdateCustomMetrics(statJson), "Failed updating TRT LLM statistics");
+
+
 #endif
         }
     }
