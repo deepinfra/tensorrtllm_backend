@@ -187,6 +187,7 @@ std::vector<InputTensors> readInputsTensors(TRITONBACKEND_Request* request)
         if (std::string(input_name) == "START" || std::string(input_name) == "CORRID"
             || std::string(input_name) == "END" || std::string(input_name) == kStopInputTensorName
             || std::string(input_name) == kStreamingInputTensorName
+            || std::string(input_name) == kKVCacheEventsInputTensorName
             || std::string(input_name) == kStructuredExecutionInputTensorName)
         {
             continue;
