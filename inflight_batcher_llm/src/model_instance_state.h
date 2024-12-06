@@ -54,9 +54,29 @@ namespace triton::backend::inflight_batcher_llm::tests
 class ModelInstanceStateTest;
 class ModelInstanceStateTest_ExecutorConfig_Test;
 } // namespace triton::backend::inflight_batcher_llm::tests
+namespace tensorrt_llm::executor {
+struct KVCacheStoredBlockData;
+}
 
 namespace triton::backend::inflight_batcher_llm
 {
+
+
+struct KVCacheBlockDataWithParent : public executor::KVCacheStoredBlockData {
+    using IdType = uint64_t;
+    IdType parentHash;
+    IdType rootHash;
+
+    static constexpr IdType NULL_ID = (IdType)0;
+
+    static_assert(sizeof(executor::IdType) == sizeof(KVCacheBlockDataWithParent::IdType));
+
+    KVCacheBlockDataWithParent(const executor::KVCacheStoredBlockData &data, IdType parentHash, IdType rootHash)
+        : executor::KVCacheStoredBlockData(data),
+        parentHash(parentHash),
+        rootHash(rootHash) {
+    }
+};
 
 /// @brief Struct to hold configs that is will be used later when creating the executor requests
 struct InstanceSpecificConfig
@@ -104,6 +124,21 @@ struct RequestData
     bool returnPerfMetrics;
     bool returnKvCacheReuseStats;
     std::unique_ptr<FreeStateHolder> structuredExecutionState;
+};
+
+struct KVCacheEventsRequest
+{
+    TRITONBACKEND_ResponseFactory* factory;
+    TRITONBACKEND_Request* tritonRequest;
+    std::unordered_set<std::string> outputNames;
+    struct Hasher {
+        size_t operator()(const KVCacheEventsRequest &r) const {
+            return std::hash<void*>()(r.factory);
+        }
+    };
+    bool operator== (const KVCacheEventsRequest &oth) const {
+        return factory == oth.factory && tritonRequest == oth.tritonRequest;
+    }
 };
 
 //
@@ -216,6 +251,8 @@ private:
     /// @brief Send a response during enqueue
     void sendEnqueueResponse(TRITONBACKEND_Request* request, TRITONSERVER_Error* error);
 
+    bool handleKVCacheEventsRequest(TRITONBACKEND_Request* request, std::string const& tritonRequestId);
+
     /// @brief Cancel a request
     bool handleStopRequest(TRITONBACKEND_Request* request, std::string const& tritonRequestId);
 
@@ -268,6 +305,28 @@ private:
 
     /// @brief Flag to stop the WaitForCancel thread when the model instance is being destroyed
     bool mStopWaitForCancel;
+
+    /// @brief Retrieve KVCache events from the executor and buffer them as triton responses.
+    void WaitForKVCacheEvents();
+
+    void sendKVCacheEvents(
+        const KVCacheEventsRequest &req,
+        const std::vector<int64_t> &hashVector,
+        const std::vector<int64_t> &parentHashVector,
+        const std::vector<int64_t> &rootHashVector,
+        const std::vector<int32_t> &cacheLevelVector);
+
+    /// @brief The thread for WaitForKVCacheEvents() to run
+    std::thread mWaitForKVCacheEventsThread;
+    std::mutex mKVCacheEventsMutex;
+    std::unordered_set<KVCacheEventsRequest, KVCacheEventsRequest::Hasher> mKVCacheEventsRequests;
+    std::unordered_map<executor::IdType, KVCacheBlockDataWithParent> mKVCacheMirror;
+
+    /// @brief Flag to stop the WaitForKVCacheEvents thread when the model instance is being destroyed
+    bool mStopWaitForKVCacheEvents;
+
+    executor::IdType eventCounter = 0;
+    size_t kvEventBufferMaxSize = 0;
 
     std::unordered_map<executor::IdType, RequestData> mRequestIdToRequestData;
     std::unordered_map<std::string, std::set<executor::IdType>> mTritonRequestIdToRequestIds;
