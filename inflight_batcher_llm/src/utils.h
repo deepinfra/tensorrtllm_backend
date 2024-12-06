@@ -128,10 +128,16 @@ struct OutputFieldsNames
     static constexpr char const* kvCacheAllocNewBlocks = "kv_cache_alloc_new_blocks";
     static constexpr char const* kvCacheReusedBlocks = "kv_cache_reused_blocks";
     static constexpr char const* kvCacheAllocTotalBlocks = "kv_cache_alloc_total_blocks";
+    // kv events
+    static constexpr char const* kvHashes = "kv_hashes";
+    static constexpr char const* kvParentHashes = "kv_parent_hashes";
+    static constexpr char const* kvRootHashes = "kv_root_hashes";
+    static constexpr char const* kvCacheLevels = "kv_cache_levels";
 };
 
 inline static std::string const kStopInputTensorName = "stop";
 inline static std::string const kStreamingInputTensorName = "streaming";
+inline static std::string const kKVCacheEventsInputTensorName = "kv_cache_events";
 inline static std::string const kStructuredExecutionInputTensorName = "structured_execution";
 inline static std::string const kRequestTypeParameterName = "request_type";
 inline static std::unordered_map<std::string, executor::RequestType> stringToRequestType
