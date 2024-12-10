@@ -88,6 +88,10 @@ public:
         });
     }
 
+    virtual ~JsonBatchedLogitProcessor() {
+        initialization_thread.join(); // Prevents destructor crash due to initialization failure.
+    }
+
     const uint8_t *getStateMaskData() override {
         return precalculated_structure_graph->precalculated_vectors_tensor.get();
     }
