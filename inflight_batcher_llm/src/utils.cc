@@ -349,7 +349,7 @@ std::string getRequestStringInputTensor(TRITONBACKEND_Request* request, std::str
         // If the user does not provide input "stop", then regard the request as
         // unstopped
         std::string msg
-            = "ModelInstanceState::getRequestBooleanInputTensor: user "
+            = "ModelInstanceState::getRequestStringInputTensor: user "
               "did not not provide "
             + inputTensorName + " input for the request";
         LOG_MESSAGE(TRITONSERVER_LOG_VERBOSE, msg.c_str());
