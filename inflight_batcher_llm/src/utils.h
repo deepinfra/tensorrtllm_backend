@@ -116,15 +116,10 @@ struct OutputFieldsNames
     static constexpr char const* sequenceIndex = "sequence_index";
     static constexpr char const* contextPhaseParams = "context_phase_params";
     static constexpr char const* reusedTokens = "reused_tokens";
-    static constexpr char const* kvHashes = "kv_hashes";
-    static constexpr char const* kvParentHashes = "kv_parent_hashes";
-    static constexpr char const* kvRootHashes = "kv_root_hashes";
-    static constexpr char const* kvCacheLevels = "kv_cache_levels";
 };
 
 inline static std::string const kStopInputTensorName = "stop";
 inline static std::string const kStreamingInputTensorName = "streaming";
-inline static std::string const kKVCacheEventsInputTensorName = "kv_cache_events";
 inline static std::string const kStructuredExecutionInputTensorName = "structured_execution";
 inline static std::string const kRequestTypeParameterName = "request_type";
 inline static std::unordered_map<std::string, executor::RequestType> stringToRequestType
