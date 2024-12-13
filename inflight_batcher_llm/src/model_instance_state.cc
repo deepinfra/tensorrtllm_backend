@@ -906,11 +906,11 @@ void ModelInstanceState::enqueue(TRITONBACKEND_Request** requests, uint32_t cons
                 tritonRequestId = charRequestId;
             }
 
-            if (handleStopRequest(request, tritonRequestId))
+            if (handleKVCacheEventsRequest(request, tritonRequestId))
             {
                 continue;
             }
-            if (handleKVCacheEventsRequest(request, tritonRequestId))
+            if (handleStopRequest(request, tritonRequestId))
             {
                 continue;
             }
@@ -1205,9 +1205,6 @@ void ModelInstanceState::sendKVCacheEvents(
     const std::vector<int64_t> &rootHashVector,
     const std::vector<int32_t> &cacheLevelVector)
 {
-    if (hashVector.empty()) {
-        return; // Avoid sending empty events.
-    }
     TRITONBACKEND_Response* tritonResponse;
     LOG_IF_ERROR(
         TRITONBACKEND_ResponseNewFromFactory(&tritonResponse, req.factory), "Failed to create KVCacheEvents resp");
@@ -1272,6 +1269,7 @@ void ModelInstanceState::WaitForKVCacheEvents()
 {
     std::shared_ptr<executor::KVCacheEventManager> KVEventManager
         = mExecutor->getKVCacheEventManager().value_or(std::shared_ptr<executor::KVCacheEventManager>());
+    auto lastHeartbeat = std::chrono::steady_clock::now();
     while (!mStopWaitForKVCacheEvents)
     {
         std::chrono::milliseconds waitTime(10);
@@ -1387,6 +1385,13 @@ void ModelInstanceState::WaitForKVCacheEvents()
                 TLLM_LOG_ERROR("Unsupported event type. This shouldn't happen!");
             }
         }
+        bool sendHeartbeat = false;
+        auto currentTime = std::chrono::steady_clock::now();
+        if (currentTime - lastHeartbeat > std::chrono::duration<double>(1.0))
+        {
+            sendHeartbeat = true;
+            lastHeartbeat = currentTime;
+        }
         for (auto iter = mKVCacheEventsRequests.begin(); iter != mKVCacheEventsRequests.end();)
         {
             bool isCancelled = false;
@@ -1403,7 +1408,10 @@ void ModelInstanceState::WaitForKVCacheEvents()
                 iter = mKVCacheEventsRequests.erase(iter); // goes to the next iterator and erases.
             } else
             {
-                sendKVCacheEvents(*iter, hashVector, parentHashVector, rootHashVector, cacheLevelVector);
+                if (!hashVector.empty() || sendHeartbeat)
+                {
+                    sendKVCacheEvents(*iter, hashVector, parentHashVector, rootHashVector, cacheLevelVector);
+                }
                 ++iter;
             }
         }
