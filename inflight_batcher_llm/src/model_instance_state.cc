@@ -827,9 +827,19 @@ bool ModelInstanceState::handleKVCacheEventsRequest(TRITONBACKEND_Request* reque
         parentHashVector.push_back(kv.second.parentHash);
         rootHashVector.push_back(kv.second.rootHash);
         cacheLevelVector.push_back(kv.second.cacheLevel);
+        if (hashVector.size() > 2048) {
+            sendKVCacheEvents(*iter, hashVector, parentHashVector, rootHashVector, cacheLevelVector);
+            hashVector.clear();
+            parentHashVector.clear();
+            rootHashVector.clear();
+            cacheLevelVector.clear();
+        }
     }
 
-    sendKVCacheEvents(*iter, hashVector, parentHashVector, rootHashVector, cacheLevelVector);
+    if (!hashVector.empty()) {
+        sendKVCacheEvents(*iter, hashVector, parentHashVector, rootHashVector, cacheLevelVector);
+    }
+    sendKVCacheEvents(*iter, {}, {}, {}, {});
 
     return true;
 }
