@@ -1312,11 +1312,14 @@ void ModelInstanceState::WaitForKVCacheEvents()
                     rootHash = iter->second.rootHash;
                 }
 
+                TLLM_LOG_INFO(
+                    "Event ID %d: %lu Blocks %lu root %lu were inserted into the radix tree with parent %lu at level %d prio %d.",
+                    event.eventId, eventData.blocks.size(), eventData.blocks[0].blockHash, rootHash, eventData.parentHash, eventData.blocks[0].cacheLevel, eventData.blocks[0].priority);
                 for (auto& block : eventData.blocks)
                 {
-                    TLLM_LOG_INFO(
-                        "Event ID %d: Block %04x was inserted into the radix tree with parent %04x at level %d prio %d.",
-                        event.eventId, block.blockHash, eventData.parentHash, block.cacheLevel, block.priority);
+                    TLLM_LOG_DEBUG(
+                        "Event ID %d: Block %lu root %lu was inserted into the radix tree with parent %lu at level %d prio %d.",
+                        event.eventId, block.blockHash, rootHash, eventData.parentHash, block.cacheLevel, block.priority);
 
                     hashVector.push_back(block.blockHash);
                     parentHashVector.push_back(parentHash);
@@ -1332,11 +1335,10 @@ void ModelInstanceState::WaitForKVCacheEvents()
 
                 for (auto const& hash : eventData.blockHashes)
                 {
-                    TLLM_LOG_INFO("Event ID %d: Block %04x was removed from the radix tree.", event.eventId, hash);
-
                     auto iter = mKVCacheMirror.find(hash);
                     TLLM_CHECK(iter != mKVCacheMirror.end());
 
+                    TLLM_LOG_DEBUG("Event ID %d: Block %lu root %lu was removed from the radix tree with parent %lu.", event.eventId, hash, iter->second.rootHash, iter->second.parentHash);
                     hashVector.push_back(hash);
                     parentHashVector.push_back(iter->second.parentHash);
                     rootHashVector.push_back(iter->second.rootHash);
@@ -1357,8 +1359,8 @@ void ModelInstanceState::WaitForKVCacheEvents()
                 if (eventData.priority.has_value())
                 {
                     // The block priority was updated
-                    TLLM_LOG_INFO("Event ID %d: Block %04x priority was changed from %d to %d", event.eventId,
-                        eventData.blockHash, eventData.priority->oldValue, eventData.priority->newValue);
+                    TLLM_LOG_DEBUG("Event ID %d: Block %lu root %lu parent %lu priority was changed from %d to %d", event.eventId,
+                        eventData.blockHash, blockData.rootHash, blockData.parentHash, eventData.priority->oldValue, eventData.priority->newValue);
                     TLLM_CHECK(blockData.priority == eventData.priority->oldValue);
                     blockData.priority = eventData.priority->newValue;
                 }
@@ -1366,8 +1368,8 @@ void ModelInstanceState::WaitForKVCacheEvents()
                 if (eventData.cacheLevel.has_value())
                 {
                     // The block cache level was updated
-                    TLLM_LOG_INFO("Event ID %d: Block %04x cache level was changed from %d to %d", event.eventId,
-                        eventData.blockHash, eventData.cacheLevel->oldValue, eventData.cacheLevel->newValue);
+                    TLLM_LOG_DEBUG("Event ID %d: Block %lu root %lu parent %lu cache level was changed from %d to %d", event.eventId,
+                        eventData.blockHash, blockData.rootHash, blockData.parentHash, eventData.cacheLevel->oldValue, eventData.cacheLevel->newValue);
                     TLLM_CHECK(blockData.cacheLevel == eventData.cacheLevel->oldValue);
                     blockData.cacheLevel = eventData.cacheLevel->newValue;
                     hashVector.push_back(eventData.blockHash);
