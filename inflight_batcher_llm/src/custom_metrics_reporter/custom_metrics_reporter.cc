@@ -44,9 +44,9 @@ const std::vector<std::string> CustomMetricsReporter::runtime_memory_labels_{"cp
 
 const std::vector<std::string> CustomMetricsReporter::kv_cache_keys_{"Max KV cache blocks", "Free KV cache blocks",
     "Used KV cache blocks", "Tokens per KV cache block",
-    "Alloc Total KV cache blocks", "Alloc New KV cache blocks", "Reused KV cache blocks"};
+    "Alloc Total KV cache blocks", "Alloc New KV cache blocks", "Reused KV cache blocks", "Missed KV cache blocks"};
 const std::vector<std::string> CustomMetricsReporter::kv_cache_labels_{"max", "free", "used", "tokens_per",
-    "alloc_total", "alloc_new", "reused"};
+    "alloc_total", "alloc_new", "reused", "missed"};
 
 const std::vector<std::string> CustomMetricsReporter::dis_serving_keys_{"KV cache transfer time", "Request count"};
 const std::vector<std::string> CustomMetricsReporter::dis_serving_labels_{"kv_cache_transfer_ms", "request_count"};
