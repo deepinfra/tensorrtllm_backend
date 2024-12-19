@@ -1628,16 +1628,7 @@ void ModelInstanceState::WaitForResponse()
 
             auto [tritonResponse, isFinal, error, outputTokensSize]
                 = fillTritonResponse(factory, response, requestData);
-            {
-                std::lock_guard<std::mutex> lock(mRequestIdToRequestDataMutex);
-                if (!mRequestIdToRequestData.count(requestId))
-                {
-                    TLLM_LOG_ERROR("Unexpected response for a request ID that is not active");
-                    continue;
-                }
-                mRequestIdToRequestData[requestId].outputTokensSize += outputTokensSize;
-                requestData = mRequestIdToRequestData[requestId];
-            }
+            requestData.outputTokensSize += outputTokensSize;
 
             if (isFinal)
             {
