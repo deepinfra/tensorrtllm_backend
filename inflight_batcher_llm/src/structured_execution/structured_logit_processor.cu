@@ -85,7 +85,7 @@ void invokeApplyLogitMask(
     applyLogitMask<<<grid, block, 0, stream>>>(logits,
         vocabSize, states, endIds, batchSize,
         maskVector, maskTokenSizePadded, extraVocabSize);
-    sync_check_cuda_error();
+    sync_check_cuda_error(stream);
 }
 
 template void invokeApplyLogitMask(
