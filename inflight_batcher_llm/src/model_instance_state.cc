@@ -1677,7 +1677,6 @@ void ModelInstanceState::WaitForResponse()
                     continue;
                 }
                 mRequestIdToRequestData[requestId].outputTokensSize += outputTokensSize;
-                requestData = mRequestIdToRequestData[requestId];
             }
 
             if (isFinal)
