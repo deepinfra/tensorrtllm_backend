@@ -1785,6 +1785,7 @@ void ModelInstanceState::WaitForStats()
                 statJson.append("\"Alloc Total KV cache blocks\":" + std::to_string(kvStats.allocTotalBlocks) + ",");
                 statJson.append("\"Alloc New KV cache blocks\":" + std::to_string(kvStats.allocNewBlocks) + ",");
                 statJson.append("\"Reused KV cache blocks\":" + std::to_string(kvStats.reusedBlocks) + ",");
+		statJson.append("\"Missed KV cache blocks\":" + std::to_string(kvStats.missedBlocks) + ",");
                 // Calculate and append the used KV cache block fraction.
                 double fraction = 0.0;
                 if (static_cast<double>(kvStats.maxNumBlocks) > 0.0)
