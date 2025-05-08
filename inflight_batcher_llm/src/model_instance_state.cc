@@ -357,8 +357,26 @@ executor::SchedulerConfig ModelInstanceState::getSchedulerConfigFromParams(bool 
     {
         TLLM_LOG_WARNING(e.what());
     }
+    using executor::ContextChunkingPolicy;
+    auto contextChunkingPolicy = ContextChunkingPolicy::kEQUAL_PROGRESS;
+    try
+    {
+        std::string chunkPolicyStr = model_state_->GetParameter<std::string>("context_chunking_policy");
+        if (chunkPolicyStr == "equal_progress")
+        {
+            contextChunkingPolicy = ContextChunkingPolicy::kEQUAL_PROGRESS;
+        }
+        else if (chunkPolicyStr == "first_come_first_served")
+        {
+            contextChunkingPolicy = ContextChunkingPolicy::kFIRST_COME_FIRST_SERVED;
+        }
+    }
+    catch (std::exception const& e)
+    {
+        TLLM_LOG_WARNING(e.what());
+    }
 
-    return executor::SchedulerConfig(schedulerPolicy);
+    return executor::SchedulerConfig(schedulerPolicy, contextChunkingPolicy);
 }
 
 executor::SpeculativeDecodingConfig ModelInstanceState::getSpeculativeDecodingConfigFromParams(
